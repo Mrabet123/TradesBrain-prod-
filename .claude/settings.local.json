@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(echo \"App screens: $\\(find ./app -name \"*.tsx\")"
+      "Bash(echo \"App screens: $\\(find ./app -name \"*.tsx\")",
+      "Bash(Select-Object Name)",
+      "PowerShell(supabase *)",
+      "PowerShell(scoop *)",
+      "PowerShell(Set-ExecutionPolicy *)",
+      "PowerShell(supabase link *)",
+      "Bash(sed 's/=.*$/=<set>/')",
+      "PowerShell(supabase functions *)"
     ]
   }
 }
