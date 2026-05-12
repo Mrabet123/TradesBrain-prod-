@@ -1,0 +1,25 @@
+# Environment files
+.env
+.env.*
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python extensions
+*.so
+
+# Distribution
+.Python
+
+# Claude
+.claude/
+
+Instructions
