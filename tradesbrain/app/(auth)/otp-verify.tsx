@@ -6,9 +6,8 @@
 
 import React, { useEffect, useState } from 'react';
 import { View, Text, TextInput, Pressable, Alert, ActivityIndicator } from 'react-native';
-import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
-import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import type { RootStackParamList } from '../_layout';
+import { useRoute, type RouteProp } from '@react-navigation/native';
+import { useAuthContext } from '../../context/AuthContext';
 import {
   verifyEmailOtp,
   verifyPhoneOtp,
@@ -18,7 +17,6 @@ import {
   type SignUpInput,
 } from '../../services/auth';
 
-type Nav = NativeStackNavigationProp<RootStackParamList>;
 type Params = { OtpVerify: { signUpData: SignUpInput } };
 
 const RESEND_COOLDOWN_S = 60;
@@ -26,7 +24,7 @@ const LOCKOUT_S = 300; // 5 minutes
 const MAX_WRONG = 3;
 
 export default function OtpVerifyScreen() {
-  const nav = useNavigation<Nav>();
+  const { refreshProfileStatus, setProfileSetupPending } = useAuthContext();
   const route = useRoute<RouteProp<Params, 'OtpVerify'>>();
   const data = route.params.signUpData;
 
@@ -93,8 +91,12 @@ export default function OtpVerifyScreen() {
         setBusy(true);
         try {
           await createUserProfile(data);
-          nav.reset({ index: 0, routes: [{ name: 'Tabs' }] });
+          // users row created → flip the RootLayout gate into the app.
+          await refreshProfileStatus();
         } catch (e: any) {
+          // Couldn't create the profile — release the gate so RootLayout shows
+          // the complete-profile screen, where the user can retry.
+          setProfileSetupPending(false);
           Alert.alert('Sign up incomplete', e?.message ?? 'Could not create profile.');
         } finally {
           setBusy(false);

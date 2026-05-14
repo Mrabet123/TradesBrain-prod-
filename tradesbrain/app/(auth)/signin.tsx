@@ -18,8 +18,7 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../_layout';
-import { signInWithPassword } from '../../services/auth';
-import { supabase } from '../../services/supabase';
+import { signInWithPassword, signInWithGoogle } from '../../services/auth';
 import {
   saveCredentials,
   loadCredentials,
@@ -96,17 +95,28 @@ export default function SignInScreen() {
     setFailed(0);
     if (savePassword) await saveCredentials(email.trim(), password);
     else await clearCredentials();
-    nav.reset({ index: 0, routes: [{ name: 'Tabs' }] });
+    // Session established → onAuthStateChange in AuthContext fires → RootLayout
+    // routes into the app once the profile check resolves.
   }
 
   async function onGoogleSignIn() {
     setBusy(true);
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: 'tradesbrain://auth-callback' },
-    });
-    setBusy(false);
-    if (error) Alert.alert('Google sign-in failed', error.message);
+    try {
+      const { error, cancelled } = await signInWithGoogle();
+      if (cancelled) return;
+      if (error) throw error;
+      // Session established → onAuthStateChange in AuthContext fires →
+      // RootLayout routes (to the app, or to complete-profile for new users).
+    } catch (e: any) {
+      const msg = String(e?.message ?? '').toLowerCase();
+      if (msg.includes('network') || msg.includes('fetch')) {
+        Alert.alert('No connection', 'Google sign-in requires internet access.');
+      } else {
+        Alert.alert('Google sign-in failed', e?.message ?? 'Please try again.');
+      }
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (

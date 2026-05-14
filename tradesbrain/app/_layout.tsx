@@ -1396,6 +1396,7 @@ import SignInScreen from './(auth)/signin';
 import OtpVerifyScreen from './(auth)/otp-verify';
 import ForgotPasswordScreen from './(auth)/forgot-password';
 import PhoneSignInScreen from './(auth)/phone-signin';
+import CompleteProfileScreen from './(auth)/complete-profile';
 
 import HomeScreen from './(tabs)/home';
 import RexScreen from './(tabs)/rex';
@@ -1427,6 +1428,7 @@ export type RootStackParamList = {
   OtpVerify: { signUpData: unknown };
   ForgotPassword: undefined;
   PhoneSignIn: undefined;
+  CompleteProfile: undefined;
   Tabs: undefined;
   Job: { sessionId: string; recap?: boolean };
   JobDetail: { jobId: string };
@@ -1508,10 +1510,21 @@ function useSuspended(isAuthenticated: boolean) {
 }
 
 export default function RootLayout() {
-  const { isAuthenticated, isLoading } = useAuthContext();
+  const {
+    isAuthenticated,
+    isLoading,
+    profileComplete,
+    profileChecked,
+    profileSetupPending,
+  } = useAuthContext();
   const suspended = useSuspended(isAuthenticated);
 
   if (isLoading) return null;
+  // Wait for the first profile lookup before choosing a stack.
+  if (isAuthenticated && !profileChecked) return null;
+  // Email sign-up (OtpVerify) is mid-creation — hold rather than flash the
+  // complete-profile screen at a user who already filled the form.
+  if (isAuthenticated && !profileComplete && profileSetupPending) return null;
 
   if (isAuthenticated && suspended) {
     return <AccountSuspendedScreen />;
@@ -1521,7 +1534,7 @@ export default function RootLayout() {
     <View style={{ flex: 1 }}>
       <OfflineBanner />
       <Stack.Navigator screenOptions={{ headerShown: false }}>
-      {isAuthenticated ? (
+      {isAuthenticated && profileComplete ? (
         <>
           <Stack.Screen name="Tabs" component={TabsNavigator} />
           <Stack.Screen name="Job" component={ActiveSessionScreen} />
@@ -1541,6 +1554,8 @@ export default function RootLayout() {
           <Stack.Screen name="TeamMemberDetail" component={TeamMemberDetail} />
           <Stack.Screen name="Paywall" component={PaywallScreen} />
         </>
+      ) : isAuthenticated && !profileComplete ? (
+        <Stack.Screen name="CompleteProfile" component={CompleteProfileScreen} />
       ) : (
         <>
           <Stack.Screen name="Welcome" component={WelcomeScreen} />

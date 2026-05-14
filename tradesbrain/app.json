@@ -3,6 +3,7 @@
     "name": "tradesbrain",
     "slug": "tradesbrain",
     "version": "1.0.0",
+    "scheme": "tradesbrain",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -13,9 +14,11 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "app.tradesbrain"
     },
     "android": {
+      "package": "app.tradesbrain",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -33,7 +36,14 @@
           "merchantIdentifier": "merchant.app.tradesbrain"
         }
       ],
-      "expo-secure-store"
-    ]
+      "expo-secure-store",
+      "expo-web-browser"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "f8792972-162a-4415-bd10-a1e3c92b5efa"
+      }
+    },
+    "owner": "ghassenmans"
   }
 }

@@ -50,7 +50,8 @@ export default function PhoneSignInScreen() {
       Alert.alert('Wrong code', 'SMS code is incorrect.');
       return;
     }
-    nav.reset({ index: 0, routes: [{ name: 'Tabs' }] });
+    // Session established → onAuthStateChange in AuthContext fires → RootLayout
+    // routes: existing users → app; new phone-OTP sign-ups → complete-profile.
   }
 
   return (

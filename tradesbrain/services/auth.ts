@@ -3,6 +3,8 @@
 // Edge Function kyc-status-check is deferred (founder defer M0 deploy step) —
 // KYC status fields default to 'pending' from the column default in D5.
 
+import * as WebBrowser from 'expo-web-browser';
+import * as Linking from 'expo-linking';
 import { supabase } from './supabase';
 
 const TERMS_VERSION = 'v1.0';
@@ -108,6 +110,64 @@ export async function createUserProfile(input: SignUpInput): Promise<void> {
 
 export async function signInWithPassword(email: string, password: string) {
   return supabase.auth.signInWithPassword({ email, password });
+}
+
+// Shared Google OAuth flow used by both the Sign In and Create Account screens.
+// Opens the Supabase-hosted Google consent page in a web auth session, then
+// exchanges the PKCE code for a session. On success onAuthStateChange fires and
+// RootLayout routes — to the app for existing users, or to the complete-profile
+// screen for brand-new Google users (no public.users row yet).
+export async function signInWithGoogle(): Promise<{
+  error: Error | null;
+  cancelled: boolean;
+}> {
+  // tradesbrain://auth-callback in a build — scheme is set in app.json.
+  const redirectTo = Linking.createURL('auth-callback');
+
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    options: { redirectTo, skipBrowserRedirect: true },
+  });
+  if (error || !data?.url) {
+    return {
+      error: error ?? new Error('Could not start Google sign-in.'),
+      cancelled: false,
+    };
+  }
+
+  const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
+  if (result.type !== 'success') {
+    // User dismissed the browser — not an error.
+    return { error: null, cancelled: true };
+  }
+
+  const { queryParams } = Linking.parse(result.url);
+  const oauthError = queryParams?.error_description ?? queryParams?.error;
+  if (oauthError) return { error: new Error(String(oauthError)), cancelled: false };
+  const code = queryParams?.code;
+  if (typeof code !== 'string' || !code) {
+    return {
+      error: new Error('No authorization code returned from Google.'),
+      cancelled: false,
+    };
+  }
+
+  const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+  return { error: exchangeError ?? null, cancelled: false };
+}
+
+// True when the signed-in auth user already has a row in public.users (i.e. they
+// finished the trade + KYC profile). Drives the RootLayout onboarding gate.
+export async function profileExists(): Promise<boolean> {
+  const { data: authData } = await supabase.auth.getUser();
+  const user = authData.user;
+  if (!user) return false;
+  const { data, error } = await supabase
+    .from('users')
+    .select('id')
+    .eq('id', user.id)
+    .maybeSingle();
+  return !error && !!data;
 }
 
 export async function signInWithPhoneStart(phone: string) {

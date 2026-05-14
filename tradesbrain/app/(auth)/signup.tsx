@@ -12,33 +12,27 @@ import {
   TextInput,
   Pressable,
   ScrollView,
-  Image,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import * as ImagePicker from 'expo-image-picker';
 import type { RootStackParamList } from '../_layout';
 import TermsOverlay from '../../components/shared/TermsOverlay';
-import { startSignUp } from '../../services/auth';
+import { startSignUp, signInWithGoogle } from '../../services/auth';
+import { useAuthContext } from '../../context/AuthContext';
+import {
+  Field,
+  RadioRow,
+  PhotoPicker,
+  pickImage,
+  TRADES,
+  ACCOUNT_TYPES,
+  type TradeType,
+  type AccountType,
+} from '../../components/shared/ProfileFormFields';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
-
-type TradeType = 'plumber' | 'electrician' | 'hvac' | 'roofer' | 'other';
-type AccountType = 'solopreneur' | 'team_owner';
-
-const TRADES: { value: TradeType; label: string }[] = [
-  { value: 'plumber', label: 'Plumber' },
-  { value: 'electrician', label: 'Electrician' },
-  { value: 'hvac', label: 'HVAC Technician' },
-  { value: 'roofer', label: 'Roofer' },
-  { value: 'other', label: 'Other / General Contractor' },
-];
-
-const ACCOUNT_TYPES: { value: AccountType; label: string }[] = [
-  { value: 'solopreneur', label: 'Solopreneur' },
-  { value: 'team_owner', label: 'Team Owner' },
-];
 
 function passwordStrength(pw: string): { score: 0 | 1 | 2 | 3; label: string } {
   if (pw.length < 8) return { score: 0, label: 'Too short' };
@@ -51,10 +45,12 @@ function passwordStrength(pw: string): { score: 0 | 1 | 2 | 3; label: string } {
 
 export default function SignUpScreen() {
   const nav = useNavigation<Nav>();
+  const { setProfileSetupPending } = useAuthContext();
 
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [showTerms, setShowTerms] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
 
   // Step 1
   const [fullName, setFullName] = useState('');
@@ -120,21 +116,6 @@ export default function SignUpScreen() {
     ],
   );
 
-  async function pickImage(setter: (uri: string) => void) {
-    const perm = await ImagePicker.requestCameraPermissionsAsync();
-    const lib = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted && !lib.granted) {
-      Alert.alert('Permission needed', 'Allow camera or photo library access.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.7,
-      allowsEditing: false,
-    });
-    if (!result.canceled && result.assets[0]) setter(result.assets[0].uri);
-  }
-
   async function onCreateAccount() {
     setShowTerms(false);
     setSubmitting(true);
@@ -153,11 +134,29 @@ export default function SignUpScreen() {
         }
         return;
       }
+      // Hold the RootLayout onboarding gate — OtpVerify creates the profile
+      // right after the session is established.
+      setProfileSetupPending(true);
       nav.navigate('OtpVerify', { signUpData: formSnapshot } as any);
     } catch (e: any) {
       Alert.alert('Sign up failed', e?.message ?? 'Unknown error');
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function onGoogleSignup() {
+    setAuthBusy(true);
+    try {
+      const { error, cancelled } = await signInWithGoogle();
+      if (cancelled) return;
+      if (error) throw error;
+      // New Google user → no public.users row → RootLayout's gate routes them
+      // to the complete-profile screen to finish trade type + KYC.
+    } catch (e: any) {
+      Alert.alert('Google sign-up failed', e?.message ?? 'Please try again.');
+    } finally {
+      setAuthBusy(false);
     }
   }
 
@@ -214,6 +213,38 @@ export default function SignUpScreen() {
               keyboardType="phone-pad"
             />
           </View>
+
+          {/* Social / phone sign-up — same providers as the Sign In screen.
+              Both authenticate first, then RootLayout's gate routes the new
+              user to the complete-profile screen for trade type + KYC. */}
+          <View className="flex-row items-center my-1">
+            <View className="flex-1 h-px bg-gray-200" />
+            <Text className="mx-3 text-xs text-gray-400">OR SIGN UP WITH</Text>
+            <View className="flex-1 h-px bg-gray-200" />
+          </View>
+          <Pressable
+            onPress={onGoogleSignup}
+            disabled={authBusy}
+            className="py-4 rounded-xl border border-gray-300 mb-3 mt-2"
+          >
+            <Text className="text-center text-gray-800 font-semibold">
+              Continue with Google
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => nav.navigate('PhoneSignIn')}
+            disabled={authBusy}
+            className="py-4 rounded-xl border border-gray-300"
+          >
+            <Text className="text-center text-gray-800 font-semibold">
+              Sign up with phone OTP
+            </Text>
+          </Pressable>
+          {authBusy && (
+            <View className="mt-4 items-center">
+              <ActivityIndicator />
+            </View>
+          )}
         </View>
       )}
 
@@ -327,60 +358,5 @@ export default function SignUpScreen() {
   );
 }
 
-function Field(props: {
-  label: string;
-  value: string;
-  onChangeText: (v: string) => void;
-  secureTextEntry?: boolean;
-  keyboardType?: any;
-  autoCapitalize?: any;
-  placeholder?: string;
-}) {
-  return (
-    <View className="mb-4">
-      <Text className="text-sm font-medium text-gray-700 mb-1">{props.label}</Text>
-      <TextInput
-        value={props.value}
-        onChangeText={props.onChangeText}
-        secureTextEntry={props.secureTextEntry}
-        keyboardType={props.keyboardType}
-        autoCapitalize={props.autoCapitalize}
-        placeholder={props.placeholder}
-        className="border border-gray-300 rounded-lg px-3 py-3 text-base"
-      />
-    </View>
-  );
-}
-
-function RadioRow({ label, selected, onPress }: { label: string; selected: boolean; onPress: () => void }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      className={`flex-row items-center py-3 px-3 rounded-lg mb-2 border ${
-        selected ? 'border-brand bg-brand/5' : 'border-gray-200'
-      }`}
-    >
-      <View
-        className={`w-5 h-5 rounded-full border-2 mr-3 ${
-          selected ? 'border-brand bg-brand' : 'border-gray-400'
-        }`}
-      />
-      <Text className="text-base text-gray-800">{label}</Text>
-    </Pressable>
-  );
-}
-
-function PhotoPicker({ uri, onPick }: { uri: string | null; onPick: () => void }) {
-  return (
-    <Pressable
-      onPress={onPick}
-      className="border border-dashed border-gray-300 rounded-lg p-3 mb-4 items-center justify-center min-h-[120px]"
-    >
-      {uri ? (
-        <Image source={{ uri }} className="w-32 h-32 rounded-md" resizeMode="cover" />
-      ) : (
-        <Text className="text-gray-500">Tap to upload photo</Text>
-      )}
-    </Pressable>
-  );
-}
+// Field / RadioRow / PhotoPicker / pickImage / TRADES / ACCOUNT_TYPES now live
+// in components/shared/ProfileFormFields.tsx — shared with complete-profile.tsx.
