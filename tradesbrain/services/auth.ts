@@ -3,9 +3,21 @@
 // Edge Function kyc-status-check is deferred (founder defer M0 deploy step) —
 // KYC status fields default to 'pending' from the column default in D5.
 
-import * as WebBrowser from 'expo-web-browser';
-import * as Linking from 'expo-linking';
+import {
+  GoogleSignin,
+  statusCodes,
+} from '@react-native-google-signin/google-signin';
 import { supabase } from './supabase';
+
+// Configure once at module load. The webClientId is what Supabase verifies the
+// returned ID token against — it must also be added to the Supabase dashboard
+// under Auth → Providers → Google → "Authorized Client IDs". The iosClientId is
+// only needed on iOS; Android picks up its client from the SHA-1 fingerprint
+// registered in Google Cloud Console + the package name in app.json.
+GoogleSignin.configure({
+  webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ?? '',
+  iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
+});
 
 const TERMS_VERSION = 'v1.0';
 
@@ -112,48 +124,47 @@ export async function signInWithPassword(email: string, password: string) {
   return supabase.auth.signInWithPassword({ email, password });
 }
 
-// Shared Google OAuth flow used by both the Sign In and Create Account screens.
-// Opens the Supabase-hosted Google consent page in a web auth session, then
-// exchanges the PKCE code for a session. On success onAuthStateChange fires and
+// Shared Google sign-in flow used by both the Sign In and Create Account
+// screens. Uses the native Google account picker (iOS/Android) rather than a
+// web redirect, so the consent sheet shows the "Trades Brain" OAuth client
+// instead of the Supabase project domain. The ID token is exchanged with
+// Supabase via signInWithIdToken. On success onAuthStateChange fires and
 // RootLayout routes — to the app for existing users, or to the complete-profile
 // screen for brand-new Google users (no public.users row yet).
 export async function signInWithGoogle(): Promise<{
   error: Error | null;
   cancelled: boolean;
 }> {
-  // tradesbrain://auth-callback in a build — scheme is set in app.json.
-  const redirectTo = Linking.createURL('auth-callback');
+  try {
+    await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+    const response: any = await GoogleSignin.signIn();
 
-  const { data, error } = await supabase.auth.signInWithOAuth({
-    provider: 'google',
-    options: { redirectTo, skipBrowserRedirect: true },
-  });
-  if (error || !data?.url) {
-    return {
-      error: error ?? new Error('Could not start Google sign-in.'),
-      cancelled: false,
-    };
+    // v13+ shape: { type: 'success' | 'cancelled', data: { idToken, ... } }
+    // Older shape (defensive): { idToken } at the top level.
+    if (response?.type === 'cancelled') return { error: null, cancelled: true };
+    const idToken: string | undefined = response?.data?.idToken ?? response?.idToken;
+    if (!idToken) {
+      return {
+        error: new Error('Google did not return an ID token.'),
+        cancelled: false,
+      };
+    }
+
+    const { error } = await supabase.auth.signInWithIdToken({
+      provider: 'google',
+      token: idToken,
+    });
+    return { error: error ?? null, cancelled: false };
+  } catch (e: any) {
+    if (e?.code === statusCodes.SIGN_IN_CANCELLED) {
+      return { error: null, cancelled: true };
+    }
+    if (e?.code === statusCodes.IN_PROGRESS) {
+      return { error: null, cancelled: true };
+    }
+    const err = e instanceof Error ? e : new Error(String(e?.message ?? e));
+    return { error: err, cancelled: false };
   }
-
-  const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo);
-  if (result.type !== 'success') {
-    // User dismissed the browser — not an error.
-    return { error: null, cancelled: true };
-  }
-
-  const { queryParams } = Linking.parse(result.url);
-  const oauthError = queryParams?.error_description ?? queryParams?.error;
-  if (oauthError) return { error: new Error(String(oauthError)), cancelled: false };
-  const code = queryParams?.code;
-  if (typeof code !== 'string' || !code) {
-    return {
-      error: new Error('No authorization code returned from Google.'),
-      cancelled: false,
-    };
-  }
-
-  const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
-  return { error: exchangeError ?? null, cancelled: false };
 }
 
 // True when the signed-in auth user already has a row in public.users (i.e. they
