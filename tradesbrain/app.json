@@ -15,7 +15,10 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "app.tradesbrain"
+      "bundleIdentifier": "app.tradesbrain",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "package": "app.tradesbrain",
@@ -30,18 +33,6 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      [
-        "@stripe/stripe-react-native",
-        {
-          "merchantIdentifier": "merchant.app.tradesbrain"
-        }
-      ],
-      [
-        "@react-native-google-signin/google-signin",
-        {
-          "iosUrlScheme": "com.googleusercontent.apps.REPLACE_WITH_REVERSED_IOS_CLIENT_ID"
-        }
-      ],
       "expo-secure-store",
       "expo-web-browser"
     ],

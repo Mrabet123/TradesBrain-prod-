@@ -5,7 +5,21 @@
 //   3. presentPaymentSheet()
 //   4. On success → optimistic activation. Webhook fills the truth in <2s.
 
-import { initPaymentSheet, presentPaymentSheet } from '@stripe/stripe-react-native';
+// ─── TEMPORARY: Stripe PaymentSheet stubbed for Expo Go testing (2026-05-16) ─
+// `@stripe/stripe-react-native` is a native module not in Expo Go. The real
+// imports are replaced with no-op stubs so the bundle boots in Expo Go for
+// M1-M4 testing. The paywall (M6, post-trial-exhaustion) will show a clear
+// error if reached. TO REVERT: restore the real import line below and the
+// real <StripeProvider> wrapper in App.tsx, then re-add the
+// "@stripe/stripe-react-native" plugin in app.json.
+// import { initPaymentSheet, presentPaymentSheet } from '@stripe/stripe-react-native';
+const initPaymentSheet = async (_: any) => ({
+  error: { message: 'Stripe PaymentSheet requires the TradesBrain dev build.' },
+});
+const presentPaymentSheet = async () => ({
+  error: { message: 'Stripe PaymentSheet requires the TradesBrain dev build.', code: 'STUB' },
+});
+// ─────────────────────────────────────────────────────────────────────────────
 import { initiateCheckout, updateSubscription } from './stripe';
 
 export type PlanType = 'solo' | 'pro' | 'team';
