@@ -6,15 +6,7 @@ import './global.css';
 import React from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer } from '@react-navigation/native';
-
-// ─── TEMPORARY: Stripe stubbed for Expo Go testing (2026-05-16) ─────────────
-// <StripeProvider> requires the @stripe/stripe-react-native native module
-// which is not in Expo Go. Replaced with a pass-through wrapper so the bundle
-// boots. TO REVERT: re-add the import below + restore the real <StripeProvider>
-// wrapper (publishableKey / merchantIdentifier / urlScheme) around <AuthProvider>.
-// import { StripeProvider } from '@stripe/stripe-react-native';
-const StripeProvider = ({ children }: { children: React.ReactNode } & Record<string, unknown>) => <>{children}</>;
-// ─────────────────────────────────────────────────────────────────────────────
+import { StripeProvider } from '@stripe/stripe-react-native';
 
 import { AuthProvider } from './context/AuthContext';
 import { SubscriptionProvider } from './context/SubscriptionContext';
@@ -23,11 +15,17 @@ import { NetworkProvider } from './context/NetworkContext';
 import ErrorBoundary from './components/shared/ErrorBoundary';
 import RootLayout from './app/_layout';
 
+const STRIPE_PUBLISHABLE_KEY = process.env.EXPO_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '';
+
 export default function App() {
   return (
     <ErrorBoundary>
       <NetworkProvider>
-        <StripeProvider>
+        <StripeProvider
+          publishableKey={STRIPE_PUBLISHABLE_KEY}
+          merchantIdentifier="merchant.app.tradesbrain"
+          urlScheme="tradesbrain"
+        >
           <AuthProvider>
             <SubscriptionProvider>
               <TradeProfileProvider>
