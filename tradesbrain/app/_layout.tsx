@@ -1417,6 +1417,10 @@ import TeamAddScreen from './team/add';
 import TeamMemberDetail from './team/[memberId]';
 import OfflineBanner from '../components/shared/OfflineBanner';
 import AccountSuspendedScreen from '../components/shared/AccountSuspendedScreen';
+import ForceUpgradeScreen from '../components/shared/ForceUpgradeScreen';
+import SplashScreen from '../components/shared/SplashScreen';
+import { useMinVersion } from '../hooks/useMinVersion';
+import { registerPushToken } from '../services/pushNotifications';
 
 export type RootStackParamList = {
   Welcome: undefined;
@@ -1440,6 +1444,8 @@ export type RootStackParamList = {
   SettingsTeam: undefined;
   TeamAdd: undefined;
   TeamMemberDetail: { memberId: string };
+  Suspended: undefined;
+  History: undefined;
 };
 
 export type TabParamList = {
@@ -1513,18 +1519,50 @@ export default function RootLayout() {
     profileComplete,
     profileChecked,
     profileSetupPending,
+    user,
   } = useAuthContext();
   const suspended = useSuspended(isAuthenticated);
+  const minVersion = useMinVersion();
 
-  if (isLoading) return null;
+  // Register this device for push notifications once signed in with a profile.
+  useEffect(() => {
+    if (isAuthenticated && profileComplete && user?.id) {
+      registerPushToken(user.id);
+    }
+  }, [isAuthenticated, profileComplete, user?.id]);
+
+  if (isLoading) return <SplashScreen />;
+  // Force-upgrade gate (D6 Flow12 S19) — blocks the whole app when the bundled
+  // version is below app_config.min_supported_version.
+  if (minVersion.needsUpgrade) {
+    return (
+      <ForceUpgradeScreen
+        currentVersion={minVersion.current}
+        requiredVersion={minVersion.required}
+      />
+    );
+  }
   // Wait for the first profile lookup before choosing a stack.
-  if (isAuthenticated && !profileChecked) return null;
+  if (isAuthenticated && !profileChecked) return <SplashScreen />;
   // Email sign-up (OtpVerify) is mid-creation — hold rather than flash the
   // complete-profile screen at a user who already filled the form.
-  if (isAuthenticated && !profileComplete && profileSetupPending) return null;
+  if (isAuthenticated && !profileComplete && profileSetupPending) return <SplashScreen />;
 
+  // Suspended (D6 Flow12 S20) — restricted stack: read-only Job History only.
   if (isAuthenticated && suspended) {
-    return <AccountSuspendedScreen />;
+    return (
+      <View style={{ flex: 1 }}>
+        <Stack.Navigator screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="Suspended" component={AccountSuspendedScreen} />
+          <Stack.Screen
+            name="History"
+            component={HistoryScreen}
+            options={{ headerShown: true, title: 'Job History' }}
+          />
+          <Stack.Screen name="JobDetail" component={JobDetailScreen} />
+        </Stack.Navigator>
+      </View>
+    );
   }
 
   return (

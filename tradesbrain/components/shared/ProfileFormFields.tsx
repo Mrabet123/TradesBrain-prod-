@@ -47,6 +47,8 @@ export function Field(props: {
   autoCapitalize?: any;
   placeholder?: string;
   editable?: boolean;
+  onBlur?: () => void;
+  error?: string;
 }) {
   const editable = props.editable !== false;
   return (
@@ -55,15 +57,19 @@ export function Field(props: {
       <TextInput
         value={props.value}
         onChangeText={props.onChangeText}
+        onBlur={props.onBlur}
         secureTextEntry={props.secureTextEntry}
         keyboardType={props.keyboardType}
         autoCapitalize={props.autoCapitalize}
         placeholder={props.placeholder}
         editable={editable}
-        className={`border border-gray-300 rounded-lg px-3 py-3 text-base ${
-          editable ? '' : 'bg-gray-100 text-gray-500'
-        }`}
+        className={`border rounded-lg px-3 py-3 text-base ${
+          props.error ? 'border-red-400' : 'border-gray-300'
+        } ${editable ? '' : 'bg-gray-100 text-gray-500'}`}
       />
+      {!!props.error && (
+        <Text className="text-xs text-red-600 mt-1">{props.error}</Text>
+      )}
     </View>
   );
 }

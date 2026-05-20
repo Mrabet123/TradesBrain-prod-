@@ -1,8 +1,8 @@
 // useRexSession — Full Rex session lifecycle (D4 §4.1, D6 Flow04).
 // Owns: session creation, message persistence, streaming, summariser, RAG,
 // stage tracking, soft-cap warnings + linked sessions, apprentice mode, trial
-// decrement, close-job. All Claude calls go through services/anthropic; the
-// system prompt is assembled server-side in claude-proxy (RULE 10).
+// decrement, close-job, retry. All Claude calls go through services/anthropic;
+// the system prompt is assembled server-side in claude-proxy (RULE 10).
 
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { supabase } from '../services/supabase';
@@ -16,6 +16,8 @@ export type Stage = 1 | 2 | 3 | 4 | 5;
 
 // Rex asks this once when it detects an apprentice (D7 APPRENTICE DETECTION).
 const APPRENTICE_QUESTION = /walk through each step/i;
+// Re-summarise the conversation at most every N messages (D4 §3.2).
+const RESUMMARISE_EVERY = 8;
 
 interface State {
   session: JobSession | null;
@@ -109,6 +111,11 @@ export function useRexSession({ sessionId, tradeType, userId, recapOnLoad }: Use
   const [state, dispatch] = useReducer(reducer, initial);
   const streamingRef = useRef('');
   const recapTriggeredRef = useRef(false);
+  // Cached conversation summary — refreshed at most every RESUMMARISE_EVERY messages.
+  const summaryCacheRef = useRef<{ summary: string; atCount: number } | null>(null);
+  // The latest photo's base64/mime — kept in a ref because it is not persisted
+  // to the DB, so a retry can still re-attach the image.
+  const lastPhotoRef = useRef<{ base64: string; mime: string } | null>(null);
 
   // ── Session bootstrapping ─────────────────────────────────────────────────
   useEffect(() => {
@@ -130,9 +137,8 @@ export function useRexSession({ sessionId, tradeType, userId, recapOnLoad }: Use
           if (ses && msgs) {
             const session = rowToSession(ses);
             dispatch({ type: 'INIT', session, messages: msgs.map(rowToMessage) });
-            // A linked session (created at the soft cap) is seeded with a
-            // carry-over message but has not been opened — leave it; the seed
-            // message is its opener. Only a brand-new empty session needs S0.
+            // A linked session is seeded with a carry-over message; only a
+            // brand-new empty active session needs the S0 opener.
             if (msgs.length === 0 && session.status === 'active') {
               await openSession(session);
             }
@@ -140,14 +146,9 @@ export function useRexSession({ sessionId, tradeType, userId, recapOnLoad }: Use
           return;
         }
 
-        // Create new session
         const { data: ses, error } = await supabase
           .from('job_sessions')
-          .insert({
-            user_id: userId,
-            trade_type: tradeType,
-            session_source: 'rex',
-          })
+          .insert({ user_id: userId, trade_type: tradeType, session_source: 'rex' })
           .select()
           .single();
         if (error || !ses) throw error;
@@ -155,8 +156,6 @@ export function useRexSession({ sessionId, tradeType, userId, recapOnLoad }: Use
 
         const newSession = rowToSession(ses);
         dispatch({ type: 'INIT', session: newSession, messages: [] });
-
-        // S0 — send 6 context questions in one natural message
         await openSession(newSession);
       } catch (e: any) {
         dispatch({ type: 'ERROR', error: e?.message ?? 'Could not start session' });
@@ -226,6 +225,86 @@ export function useRexSession({ sessionId, tradeType, userId, recapOnLoad }: Use
     await persistAssistant(s.id, result.fullText, 1, result.modelUsed);
   }
 
+  // ── Claude turn for the latest user message in `history` (which ends with
+  // that user message). Shared by sendMessage and retry. ────────────────────
+  async function runAssistantTurn(s: JobSession, history: Message[]) {
+    const queryText = history[history.length - 1]?.contentText ?? '';
+
+    // Compress history past 10 messages; re-summarise at most every 8 (D4 §3.2),
+    // reusing the cached summary in between.
+    let claudeMessages: ClaudeMessage[];
+    if (shouldCompress(history.length)) {
+      let summary: string;
+      const cache = summaryCacheRef.current;
+      if (cache && history.length - cache.atCount < RESUMMARISE_EVERY) {
+        summary = cache.summary;
+      } else {
+        const compressed = await compressHistory(history);
+        summary = compressed.summary;
+        summaryCacheRef.current = { summary, atCount: history.length };
+      }
+      claudeMessages = [
+        { role: 'user', content: `[Compressed prior context]\n${summary}` },
+        ...history.slice(-3).map(toClaudeMessage),
+      ];
+    } else {
+      claudeMessages = history.map(toClaudeMessage);
+    }
+
+    // Re-attach the photo as multimodal content (base64 lives in a ref).
+    const photo = lastPhotoRef.current;
+    if (photo) {
+      const last = claudeMessages[claudeMessages.length - 1];
+      claudeMessages[claudeMessages.length - 1] = {
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: photo.mime, data: photo.base64 } },
+          { type: 'text', text: typeof last.content === 'string' ? last.content : queryText },
+        ],
+      };
+    }
+
+    const { ragContext } = await retrieveCodeContext(
+      queryText,
+      s.tradeType,
+      state.stage,
+      'diagnosis',
+    );
+
+    dispatch({ type: 'STREAM_START' });
+    streamingRef.current = '';
+    const result = await streamRexResponse(
+      {
+        tradeType: s.tradeType,
+        messages: claudeMessages,
+        sessionStage: state.stage,
+        messageType: state.stage === 3 || state.stage === 5 ? 'confirmation' : 'diagnosis',
+        ragContext,
+        maxTokens: 2000,
+      },
+      (chunk) => {
+        streamingRef.current += chunk;
+        dispatch({ type: 'STREAM_CHUNK', chunk });
+      },
+    );
+    dispatch({ type: 'STREAM_END' });
+
+    if (!result.ok) {
+      dispatch({
+        type: 'ERROR',
+        error: result.error?.includes('aborted')
+          ? 'Rex timed out (30s) — tap Retry to try again.'
+          : (result.error ?? 'Rex hit an error — tap Retry to try again.'),
+      });
+      return;
+    }
+    dispatch({ type: 'ERROR', error: null });
+    // Trial decrement — only AFTER a successful Claude response (RULE 7).
+    supabase.functions.invoke('decrement-trial-query', { body: {} }).catch(() => {});
+    await persistAssistant(s.id, result.fullText, state.stage, result.modelUsed);
+    applyStageSignal(result.stage, result.fullText);
+  }
+
   // ── Send user message (text + optional photo + optional transcript) ──────
   const sendMessage = useCallback(
     async (opts: {
@@ -246,94 +325,37 @@ export function useRexSession({ sessionId, tradeType, userId, recapOnLoad }: Use
         return;
       }
 
-      // 1) Persist user message
-      const photoUrl = opts.photoUri ?? null;
       const userMsg = await persistUser(
         s.id,
         opts.text,
-        photoUrl,
+        opts.photoUri ?? null,
         opts.transcriptOriginal ?? null,
         opts.transcriptEdited ?? null,
         state.stage,
       );
       if (!userMsg) return;
       dispatch({ type: 'APPEND', message: userMsg });
+      lastPhotoRef.current =
+        opts.photoBase64 && opts.photoMime
+          ? { base64: opts.photoBase64, mime: opts.photoMime }
+          : null;
 
-      // 2) Compress history if > 10 messages
-      let claudeMessages: ClaudeMessage[];
-      if (shouldCompress(state.messages.length + 1)) {
-        const { summary, recentMessages } = await compressHistory([
-          ...state.messages,
-          userMsg,
-        ]);
-        claudeMessages = [
-          { role: 'user', content: `[Compressed prior context]\n${summary}` },
-          ...recentMessages.map(toClaudeMessage),
-        ];
-      } else {
-        claudeMessages = [...state.messages, userMsg].map(toClaudeMessage);
-      }
-
-      // Inject photo as multimodal content on the latest user message
-      if (opts.photoBase64 && opts.photoMime) {
-        const last = claudeMessages[claudeMessages.length - 1];
-        claudeMessages[claudeMessages.length - 1] = {
-          role: 'user',
-          content: [
-            { type: 'image', source: { type: 'base64', media_type: opts.photoMime, data: opts.photoBase64 } },
-            { type: 'text', text: typeof last.content === 'string' ? last.content : opts.text },
-          ],
-        };
-      }
-
-      // 3) RAG retrieval (5 chunks @ stage ≤ 2; 2 chunks @ stage 3-5)
-      const { ragContext } = await retrieveCodeContext(
-        opts.text,
-        s.tradeType,
-        state.stage,
-        'diagnosis',
-      );
-
-      // 4) Stream the response
-      dispatch({ type: 'STREAM_START' });
-      streamingRef.current = '';
-      const result = await streamRexResponse(
-        {
-          tradeType: s.tradeType,
-          messages: claudeMessages,
-          sessionStage: state.stage,
-          messageType: state.stage === 3 || state.stage === 5 ? 'confirmation' : 'diagnosis',
-          ragContext,
-          maxTokens: 2000,
-        },
-        (chunk) => {
-          streamingRef.current += chunk;
-          dispatch({ type: 'STREAM_CHUNK', chunk });
-        },
-      );
-
-      dispatch({ type: 'STREAM_END' });
-      if (!result.ok) {
-        dispatch({
-          type: 'ERROR',
-          error:
-            result.error?.includes('aborted')
-              ? 'Rex timed out (30s) — please try again.'
-              : (result.error ?? 'Rex hit an error.'),
-        });
-        return;
-      }
-
-      // 5) Trial decrement — only AFTER a successful Claude response (RULE 7),
-      // so a failed/timed-out reply never burns a query.
-      supabase.functions.invoke('decrement-trial-query', { body: {} }).catch(() => {});
-
-      // 6) Persist assistant + advance stage on the explicit marker / heuristic
-      await persistAssistant(s.id, result.fullText, state.stage, result.modelUsed);
-      applyStageSignal(result.stage, result.fullText);
+      await runAssistantTurn(s, [...state.messages, userMsg]);
     },
     [state.session, state.messages, state.stage, state.streaming, state.closed, state.softCapReached, state.apprenticeAsked, userId],
   );
+
+  // ── Retry the Claude turn after a failed send (D8 TC-058-060). The user
+  // message is already persisted — re-run the turn without duplicating it. ───
+  const retry = useCallback(async () => {
+    const s = state.session;
+    if (!s || state.streaming || state.closed) return;
+    const last = state.messages[state.messages.length - 1];
+    if (!last || last.role !== 'user') return;
+    dispatch({ type: 'ERROR', error: null });
+    await runAssistantTurn(s, state.messages);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.session, state.messages, state.stage, state.streaming, state.closed]);
 
   // ── Stage progression — prefer Rex's explicit [[STAGE:n]] marker; fall back
   // to a content heuristic if the marker is absent. Only ever moves forward.
@@ -342,7 +364,7 @@ export function useRexSession({ sessionId, tradeType, userId, recapOnLoad }: Use
       dispatch({ type: 'STAGE', stage: explicit });
       return;
     }
-    if (explicit) return; // marker present but not ahead — respect it, no nudge
+    if (explicit) return;
     const t = text.toLowerCase();
     let next: Stage | null = null;
     if (state.stage === 1 && /(diagnosis|root cause|the issue is|component:)/.test(t)) next = 2;
@@ -357,7 +379,6 @@ export function useRexSession({ sessionId, tradeType, userId, recapOnLoad }: Use
   }, []);
 
   // ── Apprentice mode — the worker answers Rex's "walk through each step?"
-  // question; we record the choice and tell Rex how to calibrate depth.
   const onApprenticeAnswer = useCallback(
     (yes: boolean) => {
       dispatch({ type: 'APPRENTICE_SET', on: yes });
@@ -370,8 +391,7 @@ export function useRexSession({ sessionId, tradeType, userId, recapOnLoad }: Use
     [sendMessage],
   );
 
-  // ── Worker pushback (D6 Flow04 Pushback A/B): two-step. Rex holds once,
-  // then adopts. Increments pushbackCount; on second pushback, send a directive.
+  // ── Worker pushback (D6 Flow04 Pushback A/B): two-step. ───────────────────
   const onContextualAction = useCallback(
     (action: string) => {
       switch (action) {
@@ -430,8 +450,7 @@ export function useRexSession({ sessionId, tradeType, userId, recapOnLoad }: Use
     [state.session],
   );
 
-  // ── Soft-cap linked session (D4 §3.5) — compress this session's history and
-  // open a fresh child session seeded with that summary. Returns the new id.
+  // ── Soft-cap linked session (D4 §3.5) ─────────────────────────────────────
   const startLinkedSession = useCallback(async (): Promise<string | null> => {
     const s = state.session;
     if (!s) return null;
@@ -516,16 +535,22 @@ export function useRexSession({ sessionId, tradeType, userId, recapOnLoad }: Use
       .select()
       .single();
     if (data) dispatch({ type: 'APPEND', message: rowToMessage(data) });
-    // D7 APPRENTICE DETECTION — Rex asks the apprentice question once; surface
-    // the Yes/No choice to the worker.
     if (!state.apprenticeAsked && APPRENTICE_QUESTION.test(text)) {
       dispatch({ type: 'APPRENTICE_ASK' });
     }
   }
 
+  const lastMsg = state.messages[state.messages.length - 1];
   return {
     ...state,
     sendMessage,
+    retry,
+    canRetry:
+      !state.streaming &&
+      !state.closed &&
+      !!state.error &&
+      !!lastMsg &&
+      lastMsg.role === 'user',
     advanceStage,
     onContextualAction,
     onApprenticeAnswer,

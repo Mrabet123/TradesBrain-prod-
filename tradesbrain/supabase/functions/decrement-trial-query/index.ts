@@ -14,7 +14,11 @@ serve(async (req) => {
   if (!data) return new Response(JSON.stringify({ error: "Not found" }), { status: 404, headers: { "Content-Type": "application/json" } });
   if (data.subscription_status === "active") return new Response(JSON.stringify({ queries_remaining: null, trial_active: false }), { status: 200, headers: { "Content-Type": "application/json" } });
   if (data.trial_queries_remaining <= 0) return new Response(JSON.stringify({ queries_remaining: 0, trial_active: false, trial_exhausted: true }), { status: 200, headers: { "Content-Type": "application/json" } });
-  const { data: updated } = await supabase.rpc("decrement_trial_query", { user_id: user.id });
+  const { data: updated, error: rpcError } = await supabase.rpc("decrement_trial_query", { user_id: user.id });
+  if (rpcError) {
+    console.error("Decrement failed:", rpcError);
+    return new Response(JSON.stringify({ error: "decrement_failed" }), { status: 500, headers: { "Content-Type": "application/json" } });
+  }
   const n = updated ?? (data.trial_queries_remaining - 1);
   return new Response(JSON.stringify({ queries_remaining: n, trial_active: n > 0, trial_exhausted: n <= 0 }), { status: 200, headers: { "Content-Type": "application/json" } });
 });

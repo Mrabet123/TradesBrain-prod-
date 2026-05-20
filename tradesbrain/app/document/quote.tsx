@@ -283,6 +283,18 @@ export default function QuoteBuilderScreen() {
               : 'A fresh quote. Add line items and labour below after generating.'}
           </Text>
 
+          {!profile?.hourlyRate && (
+            <Pressable
+              onPress={() => nav.navigate('SettingsTrade')}
+              className="bg-amber-50 border border-amber-300 rounded-lg p-3 mb-3"
+            >
+              <Text className="text-amber-800 text-sm">
+                Hourly rate not set — the labour line will be skipped. Set it in
+                Settings → Trade.
+              </Text>
+            </Pressable>
+          )}
+
           <Pressable
             onPress={onGenerate}
             disabled={confirming || (!incomingSessionId && !jobName.trim())}

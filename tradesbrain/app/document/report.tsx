@@ -335,6 +335,18 @@ export default function ReportBuilderScreen() {
             )}
           </View>
 
+          {!profile?.hourlyRate && (
+            <Pressable
+              onPress={() => nav.navigate('SettingsTrade')}
+              className="bg-amber-50 border border-amber-300 rounded-lg p-3 mb-3"
+            >
+              <Text className="text-amber-800 text-sm">
+                Hourly rate not set — payment calculation will be skipped. Set it
+                in Settings → Trade.
+              </Text>
+            </Pressable>
+          )}
+
           <Pressable
             onPress={onGenerate}
             disabled={!summary.trim() || confirming}

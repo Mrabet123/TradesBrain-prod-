@@ -36,6 +36,14 @@ serve(async (req) => {
         await stripe.subscriptions.update(sub.id, { items: [{ id: ci.id, price: ap }], proration_behavior: "create_prorations", billing_cycle_anchor: "now" }); break;
       }
       case "add_seat": {
+        // Enforce the 10-seat maximum (D10) before touching Stripe.
+        const { count: activeMembers } = await supabase
+          .from("team_members")
+          .select("id", { count: "exact", head: true })
+          .eq("team_owner_id", user.id)
+          .eq("is_active", true);
+        if ((activeMembers ?? 0) >= 10)
+          return new Response(JSON.stringify({ error: "max_seats_reached" }), { status: 409, headers: { "Content-Type": "application/json" } });
         const sp = PPM.seat[sd.billing_cycle]; const ei = sub.items.data.find(i => i.price.id === sp);
         if (ei) await stripe.subscriptionItems.update(ei.id, { quantity: (ei.quantity ?? 0) + 1, proration_behavior: "create_prorations" });
         else await stripe.subscriptions.update(sub.id, { items: [{ price: sp, quantity: 1 }], proration_behavior: "create_prorations" }); break;

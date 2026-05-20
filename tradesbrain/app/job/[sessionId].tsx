@@ -253,10 +253,18 @@ export default function ActiveSessionScreen() {
           </View>
         )}
 
-        {/* Error */}
+        {/* Error — with a Retry that re-runs the failed turn (D8 TC-058-060) */}
         {rex.error && (
           <View className="bg-red-50 border-b border-red-200 px-4 py-2">
             <Text className="text-red-700 text-sm">{rex.error}</Text>
+            {rex.canRetry && (
+              <Pressable
+                onPress={rex.retry}
+                className="mt-1.5 self-start bg-red-600 px-4 py-1.5 rounded-lg"
+              >
+                <Text className="text-white font-semibold text-sm">Retry</Text>
+              </Pressable>
+            )}
           </View>
         )}
 

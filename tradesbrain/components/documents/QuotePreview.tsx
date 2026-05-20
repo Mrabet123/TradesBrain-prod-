@@ -159,10 +159,13 @@ export default function QuotePreview({ draft, onChange }: Props) {
         />
       </View>
 
-      <View className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-3">
+      <View className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-1">
         <Text className="text-sm text-gray-600">Subtotal (auto)</Text>
         <Text className="text-2xl font-bold text-gray-900">${subtotal.toFixed(2)}</Text>
       </View>
+      <Text className="text-xs text-gray-400 mb-3">
+        Tip: a 15–30% markup on materials is typical.
+      </Text>
 
       <Text className="text-sm font-semibold text-brand mb-1">Confirmed total</Text>
       <TextInput

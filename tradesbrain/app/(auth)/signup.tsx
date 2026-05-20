@@ -5,7 +5,7 @@
 // Create Account button disabled until all required fields valid.
 // On Create Account: Terms overlay → on agree → startSignUp() → OtpVerify.
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -18,6 +18,7 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../_layout';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import TermsOverlay from '../../components/shared/TermsOverlay';
 import { startSignUp, signInWithGoogle } from '../../services/auth';
 import { useAuthContext } from '../../context/AuthContext';
@@ -33,6 +34,9 @@ import {
 } from '../../components/shared/ProfileFormFields';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
+
+const DRAFT_KEY = 'tb_signup_draft';
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function passwordStrength(pw: string): { score: 0 | 1 | 2 | 3; label: string } {
   if (pw.length < 8) return { score: 0, label: 'Too short' };
@@ -74,6 +78,74 @@ export default function SignUpScreen() {
 
   const fullPhone = `${countryCode}${phoneLocal}`;
   const pwInfo = passwordStrength(password);
+
+  // Per-field "touched" tracking — an error only shows once a field has been
+  // blurred (or otherwise marked touched) and is still invalid.
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const markTouched = (field: string) =>
+    setTouched((t) => (t[field] ? t : { ...t, [field]: true }));
+
+  const fieldErrors = {
+    fullName:
+      fullName.trim().length >= 2 ? '' : 'Enter your full name (min 2 characters).',
+    email: EMAIL_RE.test(email) ? '' : 'Enter a valid email address.',
+    password: password.length >= 8 ? '' : 'Password must be at least 8 characters.',
+    phone:
+      phoneLocal.replace(/\D/g, '').length >= 7
+        ? ''
+        : 'Enter a valid phone number (min 7 digits).',
+  };
+
+  // ── Restore in-progress draft on mount (password is never persisted) ──────
+  const draftLoaded = useRef(false);
+  useEffect(() => {
+    AsyncStorage.getItem(DRAFT_KEY)
+      .then((raw) => {
+        if (raw) {
+          try {
+            const d = JSON.parse(raw);
+            if (typeof d.fullName === 'string') setFullName(d.fullName);
+            if (typeof d.email === 'string') setEmail(d.email);
+            if (typeof d.countryCode === 'string') setCountryCode(d.countryCode);
+            if (typeof d.phoneLocal === 'string') setPhoneLocal(d.phoneLocal);
+            if (typeof d.tradeType === 'string') setTradeType(d.tradeType);
+            if (typeof d.accountType === 'string') setAccountType(d.accountType);
+            if (typeof d.hourlyRate === 'string') setHourlyRate(d.hourlyRate);
+            if (typeof d.vatNumber === 'string') setVatNumber(d.vatNumber);
+            if (typeof d.licenseNumber === 'string') setLicenseNumber(d.licenseNumber);
+            if (typeof d.companyName === 'string') setCompanyName(d.companyName);
+          } catch {
+            /* ignore corrupt draft */
+          }
+        }
+      })
+      .finally(() => {
+        draftLoaded.current = true;
+      });
+  }, []);
+
+  // ── Persist in-progress fields on change (NOT the password) ───────────────
+  useEffect(() => {
+    if (!draftLoaded.current) return;
+    AsyncStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({
+        fullName,
+        email,
+        countryCode,
+        phoneLocal,
+        tradeType,
+        accountType,
+        hourlyRate,
+        vatNumber,
+        licenseNumber,
+        companyName,
+      }),
+    ).catch(() => {});
+  }, [
+    fullName, email, countryCode, phoneLocal, tradeType, accountType,
+    hourlyRate, vatNumber, licenseNumber, companyName,
+  ]);
 
   const step1Valid =
     fullName.trim().length > 1 &&
@@ -134,6 +206,8 @@ export default function SignUpScreen() {
         }
         return;
       }
+      // Account created — drop the persisted draft so it doesn't reappear.
+      await AsyncStorage.removeItem(DRAFT_KEY);
       // Hold the RootLayout onboarding gate — OtpVerify creates the profile
       // right after the session is established.
       setProfileSetupPending(true);
@@ -167,19 +241,30 @@ export default function SignUpScreen() {
 
       {step === 1 && (
         <View>
-          <Field label="Full name" value={fullName} onChangeText={setFullName} autoCapitalize="words" />
+          <Field
+            label="Full name"
+            value={fullName}
+            onChangeText={setFullName}
+            autoCapitalize="words"
+            onBlur={() => markTouched('fullName')}
+            error={touched.fullName ? fieldErrors.fullName : ''}
+          />
           <Field
             label="Email address"
             value={email}
             onChangeText={setEmail}
             keyboardType="email-address"
             autoCapitalize="none"
+            onBlur={() => markTouched('email')}
+            error={touched.email ? fieldErrors.email : ''}
           />
           <Field
             label="Password (min 8 chars)"
             value={password}
             onChangeText={setPassword}
             secureTextEntry
+            onBlur={() => markTouched('password')}
+            error={touched.password ? fieldErrors.password : ''}
           />
           {password.length > 0 && (
             <View className="-mt-2 mb-3">
@@ -198,7 +283,7 @@ export default function SignUpScreen() {
           )}
 
           <Text className="text-sm font-medium text-gray-700 mb-1">Phone number</Text>
-          <View className="flex-row gap-2 mb-4">
+          <View className="flex-row gap-2 mb-1">
             <TextInput
               value={countryCode}
               onChangeText={setCountryCode}
@@ -208,11 +293,18 @@ export default function SignUpScreen() {
             <TextInput
               value={phoneLocal}
               onChangeText={setPhoneLocal}
+              onBlur={() => markTouched('phone')}
               placeholder="555 123 4567"
-              className="flex-1 border border-gray-300 rounded-lg px-3 py-3 text-base"
+              className={`flex-1 border rounded-lg px-3 py-3 text-base ${
+                touched.phone && fieldErrors.phone ? 'border-red-400' : 'border-gray-300'
+              }`}
               keyboardType="phone-pad"
             />
           </View>
+          {touched.phone && !!fieldErrors.phone && (
+            <Text className="text-xs text-red-600 mb-3">{fieldErrors.phone}</Text>
+          )}
+          <View className="mb-1" />
 
           {/* Social / phone sign-up — same providers as the Sign In screen.
               Both authenticate first, then RootLayout's gate routes the new

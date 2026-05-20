@@ -7,6 +7,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, TextInput, Pressable, Alert, ActivityIndicator } from 'react-native';
 import { useRoute, type RouteProp } from '@react-navigation/native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuthContext } from '../../context/AuthContext';
 import {
   verifyEmailOtp,
@@ -22,6 +23,7 @@ type Params = { OtpVerify: { signUpData: SignUpInput } };
 const RESEND_COOLDOWN_S = 60;
 const LOCKOUT_S = 300; // 5 minutes
 const MAX_WRONG = 3;
+const LOCKOUT_KEY = 'tb_otp_lockout';
 
 export default function OtpVerifyScreen() {
   const { refreshProfileStatus, setProfileSetupPending } = useAuthContext();
@@ -46,14 +48,40 @@ export default function OtpVerifyScreen() {
     const t = setInterval(() => {
       setEmailCooldown((s) => (s > 0 ? s - 1 : 0));
       setPhoneCooldown((s) => (s > 0 ? s - 1 : 0));
+      setNow(Date.now());
     }, 1000);
     return () => clearInterval(t);
   }, []);
 
+  // Restore a persisted OTP lockout if its expiry is still in the future.
+  useEffect(() => {
+    AsyncStorage.getItem(LOCKOUT_KEY).then((raw) => {
+      if (!raw) return;
+      const until = Number(raw);
+      if (Number.isFinite(until) && until > Date.now()) {
+        setLockedUntil(until);
+      } else {
+        AsyncStorage.removeItem(LOCKOUT_KEY).catch(() => {});
+      }
+    });
+  }, []);
+
+  const [now, setNow] = useState(Date.now());
+
   const lockSecondsLeft = lockedUntil
-    ? Math.max(0, Math.ceil((lockedUntil - Date.now()) / 1000))
+    ? Math.max(0, Math.ceil((lockedUntil - now) / 1000))
     : 0;
   const isLocked = lockSecondsLeft > 0;
+
+  // Clear the lock and the persisted key once the lockout expires.
+  useEffect(() => {
+    if (lockedUntil && now >= lockedUntil) {
+      setLockedUntil(null);
+      setEmailWrong(0);
+      setPhoneWrong(0);
+      AsyncStorage.removeItem(LOCKOUT_KEY).catch(() => {});
+    }
+  }, [now, lockedUntil]);
 
   async function tryVerifyEmail() {
     if (isLocked || emailVerified || emailCode.length < 4) return;
@@ -63,7 +91,11 @@ export default function OtpVerifyScreen() {
     if (error) {
       const next = emailWrong + 1;
       setEmailWrong(next);
-      if (next >= MAX_WRONG) setLockedUntil(Date.now() + LOCKOUT_S * 1000);
+      if (next >= MAX_WRONG) {
+        const until = Date.now() + LOCKOUT_S * 1000;
+        setLockedUntil(until);
+        AsyncStorage.setItem(LOCKOUT_KEY, String(until)).catch(() => {});
+      }
       Alert.alert('Wrong code', 'Email code is incorrect.');
       return;
     }
@@ -78,7 +110,11 @@ export default function OtpVerifyScreen() {
     if (error) {
       const next = phoneWrong + 1;
       setPhoneWrong(next);
-      if (next >= MAX_WRONG) setLockedUntil(Date.now() + LOCKOUT_S * 1000);
+      if (next >= MAX_WRONG) {
+        const until = Date.now() + LOCKOUT_S * 1000;
+        setLockedUntil(until);
+        AsyncStorage.setItem(LOCKOUT_KEY, String(until)).catch(() => {});
+      }
       Alert.alert('Wrong code', 'SMS code is incorrect.');
       return;
     }
@@ -89,6 +125,7 @@ export default function OtpVerifyScreen() {
     if (emailVerified && phoneVerified) {
       (async () => {
         setBusy(true);
+        AsyncStorage.removeItem(LOCKOUT_KEY).catch(() => {});
         try {
           await createUserProfile(data);
           // users row created → flip the RootLayout gate into the app.

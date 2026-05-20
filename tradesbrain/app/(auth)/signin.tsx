@@ -18,6 +18,7 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../_layout';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { signInWithPassword, signInWithGoogle } from '../../services/auth';
 import {
   saveCredentials,
@@ -29,6 +30,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 const MAX_FAILED = 5;
 const LOCKOUT_MS = 15 * 60 * 1000;
+const LOCKOUT_KEY = 'tb_signin_lockout';
 
 export default function SignInScreen() {
   const nav = useNavigation<Nav>();
@@ -50,10 +52,42 @@ export default function SignInScreen() {
     });
   }, []);
 
+  // Restore a persisted lockout if its expiry is still in the future.
+  useEffect(() => {
+    AsyncStorage.getItem(LOCKOUT_KEY).then((raw) => {
+      if (!raw) return;
+      const until = Number(raw);
+      if (Number.isFinite(until) && until > Date.now()) {
+        setLockedUntil(until);
+        setFailed(MAX_FAILED);
+      } else {
+        AsyncStorage.removeItem(LOCKOUT_KEY).catch(() => {});
+      }
+    });
+  }, []);
+
+  const [now, setNow] = useState(Date.now());
+
   const lockSecondsLeft = lockedUntil
-    ? Math.max(0, Math.ceil((lockedUntil - Date.now()) / 1000))
+    ? Math.max(0, Math.ceil((lockedUntil - now) / 1000))
     : 0;
   const isLocked = lockSecondsLeft > 0;
+
+  // Tick a 1s timer while locked so the countdown updates and the lock
+  // releases (and the persisted key is cleared) when it expires.
+  useEffect(() => {
+    if (!lockedUntil) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [lockedUntil]);
+
+  useEffect(() => {
+    if (lockedUntil && now >= lockedUntil) {
+      setLockedUntil(null);
+      setFailed(0);
+      AsyncStorage.removeItem(LOCKOUT_KEY).catch(() => {});
+    }
+  }, [now, lockedUntil]);
 
   async function onEmailSignIn() {
     if (isLocked) return;
@@ -70,7 +104,11 @@ export default function SignInScreen() {
       }
       const next = failed + 1;
       setFailed(next);
-      if (next >= MAX_FAILED) setLockedUntil(Date.now() + LOCKOUT_MS);
+      if (next >= MAX_FAILED) {
+        const until = Date.now() + LOCKOUT_MS;
+        setLockedUntil(until);
+        AsyncStorage.setItem(LOCKOUT_KEY, String(until)).catch(() => {});
+      }
 
       if (msg.includes('suspended')) {
         Alert.alert('Account suspended', 'Your account has been suspended — contact support.');
@@ -93,6 +131,8 @@ export default function SignInScreen() {
     }
 
     setFailed(0);
+    setLockedUntil(null);
+    AsyncStorage.removeItem(LOCKOUT_KEY).catch(() => {});
     if (savePassword) await saveCredentials(email.trim(), password);
     else await clearCredentials();
     // Session established → onAuthStateChange in AuthContext fires → RootLayout
